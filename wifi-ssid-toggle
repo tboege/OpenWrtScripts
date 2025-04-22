@@ -1,0 +1,148 @@
+#!/bin/sh
+# /usr/local/bin/wifi-ssid-toggle
+# OpenWrt script to enable or disable wifi-iface sections with a specific SSID
+
+# Configuration
+LOG_TAG="wifi-ssid-toggle"
+
+# Function to log messages (calls logger and echoes to console)
+log() {
+    logger -t "$LOG_TAG" "$1"
+    echo "$1"
+}
+
+# Function to toggle wifi-iface sections with the specified SSID
+toggle_wifi_ssid() {
+    local ssid="$1"
+    local action="$2"
+    local disable_value
+    local found=0
+
+    # Validate action
+    case "$action" in
+        enable)
+            disable_value="0"
+            log "Enabling wifi-iface sections with SSID '$ssid'"
+            ;;
+        disable)
+            disable_value="1"
+            log "Disabling wifi-iface sections with SSID '$ssid'"
+            ;;
+        *)
+            log "Error: Invalid action '$action'. Use -e (enable) or -d (disable)."
+            return 1
+            ;;
+    esac
+
+    # Validate SSID
+    if [ -z "$ssid" ]; then
+        log "Error: SSID not provided. Use -s <SSID>."
+        return 1
+    fi
+
+    # Check if uci is available
+    if ! command -v uci >/dev/null 2>&1; then
+        log "Error: UCI command not found."
+        return 1
+    fi
+
+    # Iterate through all wifi-iface sections
+    local index=0
+    while uci -q get wireless.@wifi-iface[$index] >/dev/null 2>&1; do
+        local iface_ssid
+        iface_ssid=$(uci -q get wireless.@wifi-iface[$index].ssid)
+        if [ "$iface_ssid" = "$ssid" ]; then
+            found=1
+            log "Found wifi-iface[$index] with SSID '$ssid'. Setting disabled='$disable_value'."
+            uci set wireless.@wifi-iface[$index].disabled="$disable_value"
+        fi
+        index=$((index + 1))
+    done
+
+    if [ "$found" = 0 ]; then
+        log "No wifi-iface sections found with SSID '$ssid'."
+        return 1
+    fi
+
+    # Commit changes
+    uci commit wireless
+    log "Committed wireless configuration changes."
+
+    # Reload wireless
+    wifi reload >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log "Wireless configuration reloaded successfully."
+    else
+        log "Error: Failed to reload wireless configuration."
+        return 1
+    fi
+
+    return 0
+}
+
+# Usage message
+usage() {
+    log "Usage: $0 -s <SSID> [-e | -d]"
+    log "  -s <SSID>  Specify the SSID to match"
+    log "  -e         Enable wifi-iface sections (set disabled=0)"
+    log "  -d         Disable wifi-iface sections (set disabled=1)"
+    exit 1
+}
+
+# Manual argument parsing
+ssid=""
+action=""
+ssid_count=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s)
+            if [ $# -lt 2 ]; then
+                log "Error: -s requires an SSID argument."
+                usage
+            fi
+            if [ -n "$ssid" ]; then
+                log "Error: Multiple -s options specified."
+                usage
+            fi
+            ssid="$2"
+            ssid_count=$((ssid_count + 1))
+            shift 2
+            ;;
+        -e)
+            if [ -n "$action" ]; then
+                log "Error: Cannot specify both -e and -d."
+                usage
+            fi
+            action="enable"
+            shift
+            ;;
+        -d)
+            if [ -n "$action" ]; then
+                log "Error: Cannot specify both -e and -d."
+                usage
+            fi
+            action="disable"
+            shift
+            ;;
+        *)
+            log "Error: Unknown option or argument '$1'."
+            usage
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ "$ssid_count" -ne 1 ]; then
+    log "Error: Exactly one -s <SSID> must be specified."
+    usage
+fi
+
+if [ -z "$action" ]; then
+    log "Error: Either -e or -d must be specified."
+    usage
+fi
+
+# Execute toggle
+toggle_wifi_ssid "$ssid" "$action"
+exit $?
