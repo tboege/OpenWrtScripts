@@ -1,0 +1,4 @@
+#!/bin/sh
+sms_tool -d /dev/ttyUSB3 send 5010 balance
+sleep 20
+sms_tool -d /dev/ttyUSB3 recv
