@@ -1,0 +1,376 @@
+#!/usr/bin/lua
+
+-- Debug function to print messages containing "reference" based on level
+local function debug(msg, level, debug_level)
+    if level <= debug_level then
+        print("DEBUG: " .. msg)
+    end
+end
+
+-- Parse command-line arguments (--file|-f, --debug|-d)
+local function parse_arguments(args)
+    local file_path = nil
+    local debug_level = 0
+    local i = 1
+    while i <= #args do
+        if args[i] == "--file" or args[i] == "-f" then
+            i = i + 1
+            if i <= #args then
+                file_path = args[i]
+            else
+                print("Error: Missing value for --file|-f")
+                os.exit(1)
+            end
+        elseif args[i] == "--debug" or args[i] == "-d" then
+            i = i + 1
+            if i <= #args then
+                local level = tonumber(args[i])
+                if level and level >= 0 and level <= 5 then
+                    debug_level = level
+                else
+                    print("Warning: Invalid debug level '" .. args[i] .. "', defaulting to 0")
+                end
+            else
+                print("Error: Missing value for --debug|-d")
+                os.exit(1)
+            end
+        else
+            print("Warning: Unknown argument '" .. args[i] .. "'")
+        end
+        i = i + 1
+    end
+    return file_path, debug_level
+end
+
+-- Read input from file or stdin
+local function read_input(file_path, debug_level)
+    local input
+    if file_path then
+        local file = io.open(file_path, "r")
+        if not file then
+            debug("Error: Could not open input file " .. file_path, 1, debug_level)
+            os.exit(1)
+        end
+        input = file:read("*all")
+        file:close()
+    else
+        input = io.stdin:read("*all")
+    end
+    return input
+end
+
+-- Split input into MSG:-separated blocks
+local function split_into_blocks(input, debug_level)
+    local blocks = {}
+    local block = ""
+    local first_block = true
+    for line in input:gmatch("[^\n]+") do
+        if line:match("^MSG:%s") then
+            if not first_block then
+                table.insert(blocks, block)
+            end
+            block = line
+            first_block = false
+        else
+            block = block .. "\n" .. line
+        end
+    end
+    if block ~= "" then
+        table.insert(blocks, block)
+    end
+    return blocks
+end
+
+-- Convert MM/DD/YY HH:MM:SS to YYYY/MM/DD HH:MM:SS
+local function convert_timestamp(timestamp, debug_level)
+    if timestamp == "" then
+        return ""
+    end
+    local month, day, year, hour, min, sec = timestamp:match("^(%d%d)/(%d%d)/(%d%d)%s+(%d%d):(%d%d):(%d%d)$")
+    if not month then
+        return timestamp
+    end
+    local full_year = tonumber(year) < 70 and "20" .. year or "19" .. year
+    local new_timestamp = string.format("%s/%s/%s %s:%s:%s", full_year, month, day, hour, min, sec)
+    return new_timestamp
+end
+
+-- Parse a single block into fields
+local function parse_block(block, ref_counter, debug_level)
+    local msg_val = ""
+    local from_val = ""
+    local timestamp_val = ""
+    local reference_val = ""
+    local part_val = ""
+    local total_val = ""
+    local content_lines = {}
+
+    -- Split block into lines
+    local lines = {}
+    for line in block:gmatch("[^\n]+") do
+        table.insert(lines, line)
+    end
+
+    -- Parse each line
+    for j, line in ipairs(lines) do
+        line = line:match("^%s*(.-)%s*$") -- Trim whitespace
+        if line ~= "" then
+            if j == 1 then
+                msg_val = line:match("^MSG:%s*(.+)$") or ""
+            elseif line:match("^From:%s") then
+                from_val = line:match("^From:%s*(.+)$") or ""
+            elseif line:match("^Date/Time:%s") then
+                timestamp_val = line:match("^Date/Time:%s*(.+)$") or ""
+                if timestamp_val ~= "" then
+                    timestamp_val = convert_timestamp(timestamp_val, debug_level)
+                end
+            elseif line:match("^Reference number:%s") then
+                reference_val = line:match("^Reference number:%s*(.+)$") or ""
+                if reference_val ~= "" then
+                    debug("Assigned reference = " .. reference_val, 3, debug_level)
+                end
+            elseif line:match("^SMS segment%s") then
+                part_val, total_val = line:match("^SMS segment%s+(%d+)%s+of%s+(%d+)$")
+                if not part_val then
+                    part_val = ""
+                    total_val = ""
+                end
+            else
+                table.insert(content_lines, line)
+            end
+        end
+    end
+
+    -- Join content lines
+    local content_val = table.concat(content_lines, "\n")
+    if msg_val == "" then
+        return nil, ref_counter
+    end
+
+    -- Apply defaults
+    if reference_val == "" then
+        reference_val = tostring(ref_counter)
+        ref_counter = ref_counter + 1
+        debug("Assigned default reference = " .. reference_val, 3, debug_level)
+    end
+    if part_val == "" then
+        part_val = "1"
+    end
+    if total_val == "" then
+        total_val = "1"
+    end
+
+    return {
+        msg = msg_val,
+        from = from_val,
+        timestamp = timestamp_val,
+        reference = reference_val,
+        part = part_val,
+        total = total_val,
+        content = content_val
+    }, ref_counter
+end
+
+-- Store parsed fields in message dictionary
+local function store_message(message, fields, debug_level)
+    local ref = fields.reference
+    local part = fields.part
+    if not message[ref] then
+        message[ref] = {}
+    end
+    message[ref][part] = {
+        msg = fields.msg,
+        from = fields.from,
+        timestamp = fields.timestamp,
+        part = part,
+        total = fields.total,
+        content = fields.content
+    }
+    debug("Stored for reference " .. ref .. ", part " .. part .. ":", 4, debug_level)
+    debug("  msg: " .. (fields.msg or ""), 4, debug_level)
+    debug("  from: " .. (fields.from or ""), 4, debug_level)
+    debug("  timestamp: " .. (fields.timestamp or ""), 4, debug_level)
+    debug("  part: " .. (part or ""), 4, debug_level)
+    debug("  total: " .. (fields.total or ""), 4, debug_level)
+    debug("  content: " .. (fields.content or ""), 4, debug_level)
+end
+
+-- Combine messages by reference
+local function combine_messages(message, debug_level)
+    local combined_messages = {}
+    debug("Combining messages by reference", 4, debug_level)
+
+    for ref, parts in pairs(message) do
+        debug("Processing reference " .. ref, 5, debug_level)
+
+        -- Sort parts numerically
+        local part_list = {}
+        for part, _ in pairs(parts) do
+            table.insert(part_list, tonumber(part))
+        end
+        table.sort(part_list)
+
+        -- Deduplicate parts
+        local unique_parts = {}
+        local processed = {}
+        for _, part in ipairs(part_list) do
+            local part_str = tostring(part)
+            if not processed[part_str] then
+                processed[part_str] = true
+                table.insert(unique_parts, part_str)
+            end
+        end
+        debug("Sorted and deduplicated parts for reference " .. ref .. ": " .. table.concat(unique_parts, ","), 5, debug_level)
+
+        -- Combine fields
+        local from_val = ""
+        local total_val = ""
+        local timestamp_val = ""
+        local content_parts = {}
+        local first_timestamp = nil
+        local max_total = 0
+
+        for _, part in ipairs(unique_parts) do
+            local fields = parts[part]
+            if fields.from ~= "" and from_val == "" then
+                from_val = fields.from
+            end
+            if fields.total ~= "" then
+                local total_num = tonumber(fields.total) or 0
+                if total_num > max_total then
+                    max_total = total_num
+                    total_val = fields.total
+                end
+            end
+            if fields.timestamp ~= "" and not first_timestamp then
+                first_timestamp = fields.timestamp
+            end
+            if fields.content ~= "" then
+                table.insert(content_parts, fields.content)
+            end
+        end
+
+        -- Apply defaults
+        if total_val == "" then
+            total_val = tostring(#unique_parts)
+        end
+        if timestamp_val == "" then
+            timestamp_val = first_timestamp or ""
+        end
+
+        -- Store combined message
+        combined_messages[ref] = {
+            reference = ref,
+            from = from_val,
+            total = total_val,
+            timestamp = timestamp_val,
+            part = table.concat(unique_parts, ","),
+            content = table.concat(content_parts, "") -- No space separator
+        }
+
+        debug("Combined for reference " .. ref .. ":", 4, debug_level)
+        debug("  reference: " .. ref, 4, debug_level)
+        debug("  from: " .. (from_val or ""), 4, debug_level)
+        debug("  total: " .. (total_val or ""), 4, debug_level)
+        debug("  timestamp: " .. (timestamp_val or ""), 4, debug_level)
+        debug("  part: " .. table.concat(unique_parts, ","), 4, debug_level)
+        debug("  content: " .. table.concat(content_parts, ""), 4, debug_level)
+    end
+    return combined_messages
+end
+
+-- Sort combined messages by timestamp
+local function sort_combined_messages(combined_messages, debug_level)
+    debug("Sorting combined messages by reference", 4, debug_level)
+    local sorted_messages = {}
+    for ref, fields in pairs(combined_messages) do
+        table.insert(sorted_messages, {ref = ref, fields = fields})
+    end
+    table.sort(sorted_messages, function(a, b)
+        local ts_a = a.fields.timestamp
+        local ts_b = b.fields.timestamp
+        if ts_a == "" and ts_b == "" then
+            return a.ref < b.ref
+        elseif ts_a == "" then
+            return false
+        elseif ts_b == "" then
+            return true
+        end
+        local num_a = ts_a:gsub("[/: ]", "")
+        local num_b = ts_b:gsub("[/: ]", "")
+        return num_a < num_b
+    end)
+    return sorted_messages
+end
+
+-- Print a dictionary (message or combined_messages)
+local function print_dictionary(dict, name, debug_level, is_combined)
+    debug("Printing " .. name, 4, debug_level)
+    if is_combined then
+        for _, entry in ipairs(dict) do
+            local ref = entry.ref
+            local fields = entry.fields
+            print("Combined Reference: " .. ref)
+            print("  reference: " .. (fields.reference or ""))
+            print("  from: " .. (fields.from or ""))
+            print("  total: " .. (fields.total or ""))
+            print("  timestamp: " .. (fields.timestamp or ""))
+            print("  part: " .. (fields.part or ""))
+            print("  content: " .. (fields.content or ""))
+            print("")
+        end
+    else
+        for ref, parts in pairs(dict) do
+            print("Reference: " .. ref)
+            for part, fields in pairs(parts) do
+                print("  Part: " .. part)
+                print("    msg: " .. (fields.msg or ""))
+                print("    from: " .. (fields.from or ""))
+                print("    timestamp: " .. (fields.timestamp or ""))
+                print("    part: " .. (fields.part or ""))
+                print("    total: " .. (fields.total or ""))
+                print("    content: " .. (fields.content or ""))
+            end
+            print("")
+        end
+    end
+end
+
+-- Main function
+local function main()
+    -- Parse arguments
+    local file_path, debug_level = parse_arguments(arg)
+    debug("Starting script, debug_level = " .. debug_level, 1, debug_level)
+
+    -- Read input
+    local input = read_input(file_path, debug_level)
+
+    -- Split into blocks
+    local blocks = split_into_blocks(input, debug_level)
+
+    -- Parse blocks and build message dictionary
+    local message = {}
+    local ref_counter = 10000
+    for _, block in ipairs(blocks) do
+        local fields, new_ref_counter = parse_block(block, ref_counter, debug_level)
+        if fields then
+            store_message(message, fields, debug_level)
+            ref_counter = new_ref_counter
+        end
+    end
+
+    -- Combine messages
+    local combined_messages = combine_messages(message, debug_level)
+
+    -- Print dictionaries
+    if debug_level > 0 then
+        print_dictionary(message, "stored messages", debug_level, false)
+    end
+    local sorted_messages = sort_combined_messages(combined_messages, debug_level)
+    print_dictionary(sorted_messages, "combined messages", debug_level, true)
+
+    debug("Script completed", 1, debug_level)
+end
+
+-- Run the script
+main()
