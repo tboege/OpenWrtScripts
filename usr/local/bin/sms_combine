@@ -7,7 +7,42 @@ local function debug(msg, level, debug_level)
     end
 end
 
--- Parse command-line arguments (--file|-f, --debug|-d)
+-- Function to display usage information
+local function show_usage()
+    print([[
+sms_combine: A tool for combining and sorting SMS messages received via sms_tool.
+
+Purpose:
+  This script processes SMS messages received using the `sms_tool recv` command, 
+  combines message segments based on reference numbers, sorts them by timestamp, 
+  and outputs the full, sorted messages.
+
+Usage:
+  sms_combine [OPTIONS]
+
+Options:
+  -f, --file <file_path>       Specify the input file containing SMS data. 
+                               If not provided, the script reads from stdin.
+  -d, --debug <level>          Set the debug level (0-5, default: 0). 
+                               Higher levels provide more detailed output.
+  -?, -h, --help               Show this help message.
+
+How it Works:
+  1. Read SMS message data from the specified file or stdin.
+  2. Parse the data to extract message segments, reference numbers, and timestamps.
+  3. Combine segments using reference numbers and sort messages by timestamp.
+  4. Output the combined and sorted messages in an easily readable format.
+
+Example Usage:
+  To combine and sort SMS messages received by `sms_tool recv`:
+    sms_tool recv | sms_combine
+  To process SMS messages from a file:
+    sms_combine -f messages.txt
+]])
+    os.exit(0)
+end
+
+-- Parse command-line arguments (--file|-f, --debug|-d, --help|-h|-?)
 local function parse_arguments(args)
     local file_path = nil
     local debug_level = 0
@@ -34,6 +69,8 @@ local function parse_arguments(args)
                 print("Error: Missing value for --debug|-d")
                 os.exit(1)
             end
+        elseif args[i] == "--help" or args[i] == "-h" or args[i] == "-?" then
+            show_usage()
         else
             print("Warning: Unknown argument '" .. args[i] .. "'")
         end
