@@ -1,4 +1,6 @@
 #!/usr/bin/awk -f
+
+# BEGIN block: Initialize script settings and log header
 BEGIN {
     RS = "\n\nMSG: "
     FS = "\n"
@@ -6,10 +8,19 @@ BEGIN {
     ERROR = 1
     INFO = 2
     DEBUG = 3
-    LOGLEVEL = INFO 
+    # Handle LOGLEVEL: Convert string input (DEBUG, INFO, ERROR) to numeric value
+    # Map to corresponding numeric value; default to INFO (2) if empty or invalid
+    if (LOGLEVEL == "ERROR") LOGLEVEL = ERROR
+    else if (LOGLEVEL == "INFO") LOGLEVEL = INFO
+    else if (LOGLEVEL == "DEBUG") LOGLEVEL = DEBUG
+    else LOGLEVEL = INFO
     plog(DEBUG, "MSG,Sender,Timestamp,Reference,Part,Total,Content")
 }
 
+# plog: Log messages based on log level
+# Parameters:
+#   level: Numeric log level (ERROR=1, INFO=2, DEBUG=3)
+#   message: Message to log
 function plog(level, message) {
     if (level <= LOGLEVEL) {
         if (level == ERROR) {
@@ -22,11 +33,23 @@ function plog(level, message) {
     }
 }
 
+# swap: Swap elements at indices i and j in array A, and in B
+# Parameters:
+#   A: Primary array (always swapped)
+#   B: Secondary array (always swapped)
+#   i, j: Indices to swap
+#   t: Temporary variable for swapping
 function swap(A, B, i, j, t) {
     t = A[i]; A[i] = A[j]; A[j] = t
     t = B[i]; B[i] = B[j]; B[j] = t
 }
 
+# qsort: Quicksort implementation to sort array A (and B)
+# Parameters:
+#   A: Array to sort (e.g., parts, timestamps)
+#   B: Array to mirror swaps (e.g., refs)
+#   left, right: Range of indices to sort
+#   i, last: Loop counter and partition index
 function qsort(A, B, left, right, i, last) {
     if (left >= right) {
         return
@@ -45,6 +68,7 @@ function qsort(A, B, left, right, i, last) {
     qsort(A, B, last + 1, right)
 }
 
+# debug_info: Log contents of all dictionaries for debugging
 function debug_info() {
     plog(DEBUG, "Dictionaries:")
     plog(DEBUG, "h_msg:")
@@ -73,6 +97,7 @@ function debug_info() {
     }
 }
 
+# Main block: Process each SMS message record from stdin
 {
     msg = $1
     if (NR == 1) {
@@ -85,12 +110,14 @@ function debug_info() {
     total = 1
     content = ""
 
+    # Parse record fields (From, Date/Time, Reference, SMS segment, content)
     for (i = 2; i <= NF; i++) {
         if (i == 2 && $i ~ /^From: /) {
             sender = $i
             sub(/^From: /, "", sender)
         }
         else if (i == 3 && $i ~ /^Date\/Time: /) {
+            # Extract and reformat timestamp (e.g., MM/DD/YY HH:MM:SS to YYYY/MM/DD HH:MM:SS)
             timestamp = $i
             sub(/^Date\/Time: /, "", timestamp)
             if (timestamp ~ /^[0-1][0-9]\/[0-3][0-9]\/[0-9]{2} [0-2][0-9]:[0-5][0-9]:[0-5][0-9]$/) {
@@ -116,6 +143,7 @@ function debug_info() {
         reference = "NO_" ref_num++
     }
 
+    # Store data in sparse associative arrays
     h_msg[reference] = h_msg[reference] ? h_msg[reference] "," msg : msg
     h_sender[reference] = h_sender[reference] ? h_sender[reference] : sender
     h_timestamp[reference] = (h_timestamp[reference] == "" || timestamp > h_timestamp[reference]) ? timestamp : h_timestamp[reference]
@@ -126,17 +154,25 @@ function debug_info() {
     plog(DEBUG, msg "," sender "," timestamp "," reference "," part "," total "," content)
 }
 
+# END block: Process and output combined messages
 END {
+    # Remove trailing \n from last msg
+    sub(/\n+$/, "", h_content[reference ":" part])
     plog(DEBUG, "")
     plog(DEBUG, "h_content:")
-    for (key in h_content) {
-        split(key, key_parts, ":")
-        ref = key_parts[1]
-        part = key_parts[2]
-        h_combined_content[ref] = h_combined_content[ref] ? h_combined_content[ref] h_content[key] : h_content[key]
-        plog(DEBUG, key ": " h_content[key])
+    for (ref in h_total) {
+        h_combined_content[ref] = ""
+        for (i = 1; i <= h_total[ref]; i++) {
+            key = ref ":" i
+            if (key in h_content) {
+                h_combined_content[ref] = h_combined_content[ref] ? h_combined_content[ref] h_content[key] : h_content[key]
+                plog(DEBUG, key ": " h_content[key])
+            } else {
+                plog(ERROR, "Missing part " i " for reference " ref)
+            }
+        }
     }
-    if (DEBUG <= LOGLEVEL) {debug_info() }
+    if (DEBUG <= LOGLEVEL) { debug_info() }
     n = 0
     for (ref in h_timestamp) {
         timestamps[n] = h_timestamp[ref]
@@ -144,6 +180,7 @@ END {
         n++
     }
 
+    # Sort timestamps and mirror in refs (dual-array sort)
     qsort(timestamps, refs, 0, n-1)
 
     plog(INFO, "Combined Messages (sorted by timestamp):")
@@ -158,6 +195,4 @@ END {
             plog(INFO, "")
         }
     }
-
-
 }
