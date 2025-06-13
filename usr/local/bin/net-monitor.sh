@@ -87,7 +87,7 @@ try_send_sms() {
     local message="$1"
 	log "Sending SMS to $PHONE_NO: $message"
 	output=$(run_with_timeout 5 "sms_tool -d $SMS_TTY send $PHONE_NO \"$message\"")
-	# Check if output contains "sms sent sucessfully"
+	# Check if output contains "sms sent sucessfully" - be aware, that sms_tool is misspelling, so keep sucessfully
 	if echo "$output" | grep -q "sms sent sucessfully"; then
 		log "SMS sent successfully to $PHONE_NO: $output"
 		LAST_SMS_FAILED=0
