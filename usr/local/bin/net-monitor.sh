@@ -19,17 +19,34 @@ HOURLY_CHECK_THRESHOLD=$((3600 / CHECK_INTERVAL))  # Number of checks in 1 hour 
 inet_error_count=0
 inet_persistent_error_count=0
 success_check_count=0  # Counter for successful checks
+success_start_time=""  # Store the start time of successful checks
 SMS_TTY=""  # TTY device for sms_tool
 LAST_SMS_FAILED=0  # Track if last SMS send failed (0=success, 1=failure)
 
 # Function to log messages (calls logger and echoes to console)
 log() {
     logger -t "$LOG_TAG" "$1"
-    local logmsg="$(date -Iseconds) $1"
+    local logmsg="$(date +"%Y-%m-%d %H:%M:%S") $1"
     echo "$logmsg" >> /tmp/net-monitor.log
     if [ -t 1 ]; then # running in terminal
         echo "$logmsg"
     fi
+}
+
+# Function to calculate uptime in human-readable format
+calculate_uptime() {
+    local start_time="$1"
+    local current_time=$(date +%s)
+    local start_time_secs=$(date -d "$start_time" +%s 2>/dev/null)
+    if [ -z "$start_time_secs" ]; then
+        echo "Unknown"
+        return 1
+    fi
+    local uptime_secs=$((current_time - start_time_secs))
+    local hours=$((uptime_secs / 3600))
+    local minutes=$(( (uptime_secs % 3600) / 60 ))
+    local seconds=$((uptime_secs % 60))
+    printf "%dh %dm %ds" "$hours" "$minutes" "$seconds"
 }
 
 # Function to run a command with a timeout
@@ -85,18 +102,18 @@ find_sms_tty() {
 # Function to try sending an SMS
 try_send_sms() {
     local message="$1"
-	log "Sending SMS to $PHONE_NO: $message"
-	output=$(run_with_timeout 5 "sms_tool -d $SMS_TTY send $PHONE_NO \"$message\"")
-	# Check if output contains "sms sent sucessfully" - be aware, that sms_tool is misspelling, so keep sucessfully
-	if echo "$output" | grep -q "sms sent sucessfully"; then
-		log "SMS sent successfully to $PHONE_NO: $output"
-		LAST_SMS_FAILED=0
-		return 0
-	else
-		log "Failed to send SMS to $PHONE_NO: $output"
-		LAST_SMS_FAILED=1
-		return 1
-	fi
+    log "Sending SMS to $PHONE_NO: $message"
+    output=$(run_with_timeout 5 "sms_tool -d $SMS_TTY send $PHONE_NO \"$message\"")
+    # Check if output contains "sms sent sucessfully" - be aware, that sms_tool is misspelling, so keep sucessfully
+    if echo "$output" | grep -q "sms sent sucessfully"; then
+        log "SMS sent successfully to $PHONE_NO: $output"
+        LAST_SMS_FAILED=0
+        return 0
+    else
+        log "Failed to send SMS to $PHONE_NO: $output"
+        LAST_SMS_FAILED=1
+        return 1
+    fi
 }    
 
 # Function to send SMS (queues the message)
@@ -105,7 +122,7 @@ send_sms() {
     # Queue the message
     echo "$message" >> /tmp/sms_queue
     log "Queued SMS: $message"
-	process_sms_queue
+    process_sms_queue
     return 0
 }
 
@@ -117,21 +134,21 @@ process_sms_queue() {
         local message=$(head -n 1 /tmp/sms_queue)
         log "Processing queued SMS: $message"
         # Attempt to send
-		# Reevaluate SMS_TTY only if empty or last send failed
-		PHONE_NO=$(uci get net-monitor.sms.phoneno 2>/dev/null)
-		if [ -z "$PHONE_NO" ]; then
-			log "Failed to send SMS: Phone number not configured in UCI (net-monitor.sms.phoneno)"
-			LAST_SMS_FAILED=1
-			return 1
-		fi
-		if [ -z "$SMS_TTY" ] || [ "$LAST_SMS_FAILED" -eq 1 ]; then
-			find_sms_tty
-		fi
-		if [ -z "$SMS_TTY" ]; then
-			log "Cannot send SMS: No responding TTY configured ($message)"
-			LAST_SMS_FAILED=1
-			return 1
-		fi
+        # Reevaluate SMS_TTY only if empty or last send failed
+        PHONE_NO=$(uci get net-monitor.sms.phoneno 2>/dev/null)
+        if [ -z "$PHONE_NO" ]; then
+            log "Failed to send SMS: Phone number not configured in UCI (net-monitor.sms.phoneno)"
+            LAST_SMS_FAILED=1
+            return 1
+        fi
+        if [ -z "$SMS_TTY" ] || [ "$LAST_SMS_FAILED" -eq 1 ]; then
+            find_sms_tty
+        fi
+        if [ -z "$SMS_TTY" ]; then
+            log "Cannot send SMS: No responding TTY configured ($message)"
+            LAST_SMS_FAILED=1
+            return 1
+        fi
         if try_send_sms "$message"; then
             # Remove the first line from the queue
             sed -i '1d' /tmp/sms_queue
@@ -201,7 +218,7 @@ check_internet() {
         inet_error_count=$((inet_error_count + 1))
         inet_persistent_error_count=$((inet_persistent_error_count + 1))
         log "Internet is down ($inet_error_count/$MAX_ERRORS failures, persistent: $inet_persistent_error_count/$MAX_INET_PERSISTENT_ERRORS)"
-        send_sms "$(date -Iseconds) Internet is down ($inet_error_count/$MAX_ERRORS failures, persistent: $inet_persistent_error_count/$MAX_INET_PERSISTENT_ERRORS)"
+        send_sms "$(date +"%Y-%m-%d %H:%M:%S") Internet is down ($inet_error_count/$MAX_ERRORS failures, persistent: $inet_persistent_error_count/$MAX_INET_PERSISTENT_ERRORS)"
         return 1
     fi
 }
@@ -209,7 +226,7 @@ check_internet() {
 # Function to bring up LTE interface
 bring_up_lte() {
     log "Internet down after $inet_error_count failures, attempting to bring up LTE..."
-    /sbin/ifup "$LTE_INTERFACE" >/dev/null 2>&1
+    /sbin/ifup "$LTE_INTERFACE" > /dev/null 2>&1
     inet_error_count=0  # Reset internet error counter after LTE attempt
     # Check if internet is restored after LTE bring-up
     if check_internet; then
@@ -234,26 +251,33 @@ main() {
     fi
     # Send SMS at startup
     if [ -z "$LTE_INTERFACE" ]; then
-		send_sms "$(date -Iseconds) Network monitor started Error: Interface number not configured in UCI (uci get net-monitor.sms.interface)"
-		LAST_SMS_FAILED=1
-		exit 1
+        send_sms "$(date +"%Y-%m-%d %H:%M:%S") Network monitor started Error: Interface number not configured in UCI (uci get net-monitor.sms.interface)"
+        LAST_SMS_FAILED=1
+        exit 1
     else
-        send_sms "$(date -Iseconds) Network monitor started"
-	fi
-	log "Monitoring interface $LTE_INTERFACE"		
+        send_sms "$(date +"%Y-%m-%d %H:%M:%S") Network monitor started"
+    fi
+    log "Monitoring interface $LTE_INTERFACE"
 
     # Main loop
     while true; do
         # Check internet
         if check_internet; then
+            if [ "$success_check_count" -eq 0 ]; then
+                # Record start time when first successful check occurs
+                success_start_time=$(date +"%Y-%m-%d %H:%M:%S")
+            fi
             success_check_count=$((success_check_count + 1))
             # Check if success count exceeds hourly threshold
             if [ "$success_check_count" -gt "$HOURLY_CHECK_THRESHOLD" ]; then
-                log "Internet has been up for at least an hour ($success_check_count checks performed)"
+                local uptime=$(calculate_uptime "$success_start_time")
+                log "Internet has been up $uptime since $success_start_time"
                 success_check_count=0  # Reset counter after logging
+                success_start_time=""  # Reset start time
             fi
         else
             success_check_count=0  # Reset counter on internet failure
+            success_start_time=""  # Reset start time on failure
             # Internet is down, consider bringing up LTE first
             if [ "$inet_error_count" -ge "$MAX_ERRORS" ]; then
                 bring_up_lte
